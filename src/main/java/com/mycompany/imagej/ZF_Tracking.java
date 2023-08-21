@@ -23,16 +23,20 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.awt.event.KeyEvent;
 import java.awt.event.KeyListener;
+import java.awt.event.MouseEvent;
+import java.awt.event.MouseListener;
 import java.awt.Color;
 import java.awt.Point;
 
 @Plugin(type = Command.class, menuPath = "Plugins>ZF Tracking")
-public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener {
+public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener, MouseListener {
     String TEXT1 = "Click on each of the tracked particles.\nPress [ _ ] (underscore) once done, then OK to resume.";
     String TEXT2 = "Choose a threshold value such that unwanted objects are selected.\nPress OK once done.";
+    String TEXT3 = "Stitch the trajectories by clicking on 2 of them with the point selection tool.\nPress [ _ ] (underscore) at each 2 that have been selected. "
+    		+ "\nThe 2 last clicked trajectories are bound together. Once done, press OK to resume.";
     double defaultRadius = 20.0, collisionHandlerRadius = 20.0, objectThreshold = 100, zfThreshold = 110, zfSize = 2, COLLISION_DIST = 8;
-    int MAXIMUM_AREA = 50, startSlice, collision; // in number of pixels
-    boolean canCreateROIs = true;
+    int MAXIMUM_AREA = 50, startSlice, collision, nbClicks = 1, frameRate=30;
+    boolean canCreateROIs = true, trackingDone = false;
     boolean[] canMove; // zf rois are immobilized while handling collisions
     RoiManager zfManager, objManager,collisionManager;
     ArrayList<Roi> collisionList = new ArrayList<Roi>();
@@ -45,6 +49,7 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener 
     ImageProcessor imp;
     ParticleAnalyzer pa;
     ResultsTable rt;
+    Overlay trajectories;
     
     @Override
     public void run() {
@@ -53,6 +58,8 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener 
     	IJ.getImage().getWindow().getCanvas().removeKeyListener(IJ.getInstance());
     	IJ.getImage().getWindow().addKeyListener(this);
     	IJ.getImage().getWindow().getCanvas().addKeyListener(this);
+    	IJ.getImage().getWindow().addMouseListener(this);
+    	IJ.getImage().getWindow().getCanvas().addMouseListener(this);
         
     	// a ROI manager for tracking objects
     	zfManager = new RoiManager(false);
@@ -66,16 +73,18 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener 
     	collisionManager = new RoiManager(false);
     	
     	// getting user inputs
-        /*GenericDialog gd = new GenericDialog("ZF Larvae Tracking Parameters");
+        GenericDialog gd = new GenericDialog("ZF Larvae Tracking Parameters");
         gd.addNumericField("Threshold:", upperThreshold, 90);
         gd.addNumericField("Threshold:", zfThreshold, 80);
         gd.addNumericField("Zebra fish size:", zfSize, 2);
+        gd.addNumericField("Frame rate:", frameRate, 30);
         gd.showDialog();
         if (gd.wasCanceled()) 
         	return;
         upperThreshold = gd.getNextNumber();
         zfThreshold = gd.getNextNumber();
-        zfSize = gd.getNextNumber();*/
+        zfSize = gd.getNextNumber();
+        frameRate = gd.getNextNumber();
         
     	IJ.setTool("multipoint");
     	new WaitForUserDialog(TEXT1).show(); 
@@ -108,7 +117,7 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener 
     	 * When a collision is detected in the trajectory (the zf have been stalled),
     	 * the already read positions are written to a new polyline.
     	 */
-    	Overlay trajectories = new Overlay();
+    	trajectories = new Overlay();
     	for (int i = 0 ; i < nbROIs ; i++) {
     		ArrayList<Integer> x = new ArrayList<Integer>(), y = new ArrayList<Integer>(); 
     		for (int j = 1 ; j < nbSlices ; j++) {
@@ -134,12 +143,31 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener 
     		polyline.setStrokeWidth(1);
     		trajectories.add(polyline);
     	}
-		
+    	
     	IJ.getImage().setOverlay(trajectories);
+    	trackingDone = true;
     	
     	// stitch the trajectories together
+    	zfManager.reset(); // re-use the zfManager for handling the clicking
+    	new WaitForUserDialog(TEXT3).show();
     	
     	// write the positions to a result table: zebrafish index, X, Y.
+    	trackingDone = false;
+    	IJ.run("Clear Results", "");
+    	IJ.run("Set Measurements...", "  redirect=None decimal=4");
+    	double speed;
+    	for (int zf = 0; zf < nbROIs; zf++) {
+    		for (int slice = 0; slice < nbSlices; slice++) {
+    			rt.addRow();
+    			rt.addValue("Zebrafish", zf+1);
+    			rt.addValue("On slice", slice);
+    			rt.addValue("X", positionList[zf][slice].x);
+    			rt.addValue("Y", positionList[zf][slice].y);
+    			speed = slice > 0 ? distance(positionList[zf][slice],positionList[zf][slice-1])/frameRate:0;
+    			rt.addValue("Speed (pixels/s)", speed);
+    		}
+    	}
+    	rt.show("Zebrafish Tracking Results");
     }
 
     void moveRois (int fromSlice, int toSlice) {
@@ -244,13 +272,16 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener 
 			collisionRoi = makeCircleRoi(collisionX,collisionY,collisionHandlerRadius);
 			collisionRoi.setPosition(toSlice);
 			collisionManager.addRoi(collisionRoi);
+			collisionRoi.setStrokeColor(Color.red);//DEBUG
+			Overlay debug = new Overlay(collisionRoi);//DEBUG
+			IJ.getImage().setOverlay(debug);//DEBUG
     	}
     	collision = 0;
     	
         return collidesWith;
     }
     
-    /* Called once per frame. Doesn't match trajectories after collision.
+    /* Called once per frame. Doesn't match trajectories after collision. Stitching is done manually or by a separate method (?).
      * Detects the zf in the collision area and draws a new trajectory for the zf moving away from the collision.
      * 1.  Counts the number of zf in each of the colliding areas thanks to thresholding methods.
      * 2.a If the number increases (i.e the dots are separating), assign the ROIs to minima without preference and allow their movement. 
@@ -358,6 +389,92 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener 
     	}
     }
     
+    /* When the user clicks on the image, the nearest point in positionList is collected.
+	 * If the user presses [ _ ], the 2 corresponding paths are stitched together:
+	 * Starting from the nearest upstream registered collision and finishing at the nearest downstream registered collision of the second clicked roi,
+	 * all the points of this roi are swapped with the points of the first clicked at the corresponding slices. The collision record also has to be swapped.
+	 * The points that were registered during the collision are replaced by equi-distant points along a line from the last registered point 
+	 * before the collision and the first after.
+	 * These points are written to a new polyline which is added to the trajectory overlay.
+	 * When the user presses [OK], the result computations are done.
+	 * */
+    void stitch() {
+    	Point clicked1 = new Point(); Point clicked2 = new Point();
+    	int roiIndex1 = 0; int roiIndex2 = 0, tempInt;
+    	int endOfCollision=0, endOfCollision1=0, endOfCollision2=0, startOfCollision=0, startOfCollision1=0, startOfCollision2=0;
+    	Point temp = new Point();
+    	double minDist1 = Double.MAX_VALUE, minDist2 = Double.MAX_VALUE, dist;
+    	
+    	rt = ResultsTable.getResultsTable();
+    	IJ.run("Clear Results","");
+    	IJ.run("Set Measurements..."," redirect=None decimal=1");
+    	IJ.run(IJ.getImage(), "Measure", "");
+    	clicked1.x = (int) rt.getValue("X",0); clicked1.y = (int) rt.getValue("Y",0);
+    	clicked2.x = (int) rt.getValue("X",1); clicked2.y = (int) rt.getValue("Y",1);
+
+    	// find the nearest corresponding trajectory
+    	for (int r = 0; r<positionList.length; r++) {
+    		for (int s = 1; s<positionList[0].length; s++) {
+    			endOfCollision = (collisionRecord[r][s]==0 && collisionRecord[r][s-1]==1)?s:endOfCollision;
+    			startOfCollision = (collisionRecord[r][s]==1 && collisionRecord[r][s-1]==0)?s:startOfCollision;
+    			dist = distance(clicked1,positionList[r][s]);
+    			if (minDist1 > dist) {
+    				minDist1 = dist;
+    				roiIndex1 = r; endOfCollision1 = endOfCollision; startOfCollision1 = startOfCollision;
+    			}
+    			dist = distance(clicked2,positionList[r][s]);
+    			if (minDist2 > dist) {
+    				minDist2 = dist;
+    				roiIndex2 = r; endOfCollision2 = endOfCollision; startOfCollision2 = startOfCollision;
+    			}
+    		}
+    	}
+    	
+    	endOfCollision = endOfCollision2>endOfCollision1?endOfCollision2:endOfCollision1; // checking if the downstream trajectory is clicked2's.
+    	startOfCollision = startOfCollision2>startOfCollision1?startOfCollision2:startOfCollision1;
+    	// stitch the trajectories, i.e add points intermediary points when the zf was stalled
+    	int s = startOfCollision, collisionDuration = endOfCollision - startOfCollision, step = 1;
+    	do {
+    		positionList[roiIndex1][s].x = ( positionList[roiIndex1][startOfCollision].x  * (collisionDuration - step) 
+    				+ positionList[roiIndex2][endOfCollision].x * step ) / collisionDuration;
+    		positionList[roiIndex1][s].y = ( positionList[roiIndex1][startOfCollision].y  * (collisionDuration - step) 
+    				+ positionList[roiIndex2][endOfCollision].y * step ) / collisionDuration;
+    		positionList[roiIndex2][s].x = ( positionList[roiIndex2][startOfCollision].x  * (collisionDuration - step) 
+    				+ positionList[roiIndex1][endOfCollision].x * step ) / collisionDuration;
+    		positionList[roiIndex2][s].y = ( positionList[roiIndex2][startOfCollision].y  * (collisionDuration - step)
+    				+ positionList[roiIndex1][endOfCollision].y * step ) / collisionDuration;
+    		step++;
+    		s++;
+    	} while ( (s < endOfCollision+1) && (
+    			(collisionRecord[roiIndex1][s] == 1) || positionList[roiIndex1][s].equals(positionList[roiIndex1][s+1]) ));
+    	// swap the points until then next collision is met, then continue swapping all equal points (stalled zf)
+    	do {
+    		temp = positionList[roiIndex1][s];
+    		positionList[roiIndex1][s] = positionList[roiIndex2][s];
+    		positionList[roiIndex2][s] = temp;
+    		tempInt = collisionRecord[roiIndex1][s];
+    		collisionRecord[roiIndex1][s] = collisionRecord[roiIndex2][s];
+    		collisionRecord[roiIndex2][s] = tempInt;
+    		s++;
+    	} while ( (s < positionList[0].length-1) && (
+    			(collisionRecord[roiIndex1][s] == 0 || positionList[roiIndex1][s].equals(positionList[roiIndex1][s+1]) ) &&
+    			(collisionRecord[roiIndex2][s] == 0 || positionList[roiIndex2][s].equals(positionList[roiIndex2][s+1]))) );
+    	// i.e until the next collision of one of the 2 downstream trajectories is done
+    	int[] x1 = new int[positionList[0].length], x2 =  new int[positionList[0].length];
+    	int[] y1 = new int[positionList[0].length], y2 =  new int[positionList[0].length];
+    	for (int p = 0; p < positionList[0].length; p++) {
+    		x1[p] = positionList[roiIndex1][p].x; x2[p] = positionList[roiIndex2][p].x;
+    		y1[p] = positionList[roiIndex1][p].y; y2[p] = positionList[roiIndex2][p].y;
+    	}
+    	PolygonRoi polyline1 = new PolygonRoi(x1,y1,x1.length,PolygonRoi.POLYLINE);
+    	PolygonRoi polyline2 = new PolygonRoi(x2,y2,x2.length,PolygonRoi.POLYLINE);
+    	polyline1.setStrokeColor(new Color((float) Math.random(),(float) Math.random(),(float) Math.random()));
+		polyline1.setStrokeWidth(1);
+		polyline2.setStrokeColor(new Color((float) Math.random(),(float) Math.random(),(float) Math.random()));
+		polyline2.setStrokeWidth(1);
+		trajectories.add(polyline1); trajectories.add(polyline2);
+    }
+    
     void setRoisFromArray(Roi[] roiArray) {
     	if (roiArray.length != zfManager.getCount())
     		return;
@@ -402,13 +519,23 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener 
 			createStartROIs();
 			canCreateROIs = false;
 		}
+		if (e.getID() == KeyEvent.KEY_PRESSED && e.getKeyCode() == KeyEvent.VK_UNDERSCORE && trackingDone)
+			stitch();
+	}
+	@Override
+	public void mousePressed (MouseEvent e) {
+		if (nbClicks > 2) {
+    		IJ.run(IJ.getImage(), "Select None", "");
+    		nbClicks = 0;
+    	}
+		nbClicks += (e.getButton() == MouseEvent.BUTTON1 && e.getID() == MouseEvent.MOUSE_PRESSED && trackingDone)?1:0;
 	}
 
     public static void main(final String... args) throws Exception {
     	@SuppressWarnings("unused")
-	ImageJ ij = new ImageJ();
+		ImageJ ij = new ImageJ();
     	ZF_Tracking<FloatType> zf = new ZF_Tracking<FloatType>();
-    	IJ.run("AVI...", "avi=/home/criuser/Desktop/Licence/Stage_L3/n=15-06252023180457-0000.avi use convert first=507 last=537");
+    	IJ.run("AVI...", "avi=/home/criuser/Desktop/Licence/Stage_L3/n=15-06252023180457-0000.avi use convert first=500 last=537");
     	// invoke the plugin
         zf.run();
     }
@@ -417,4 +544,12 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener 
 	public void keyTyped(KeyEvent e) {}
 	@Override
 	public void keyReleased(KeyEvent e) {}
+	@Override
+	public void mouseClicked(MouseEvent e) {}
+	@Override
+	public void mouseReleased(MouseEvent e) {}
+	@Override
+	public void mouseEntered(MouseEvent e) {}
+	@Override
+	public void mouseExited(MouseEvent e) {}
 }
