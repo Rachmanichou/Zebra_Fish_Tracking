@@ -188,6 +188,8 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     }
 
     void trackMin(int roiIndex, int fromSlice, int toSlice) {
+	if (toSlice == positionList[0].length || toSlice < 0)
+    		return;
     	Roi temp = zfManager.getRoi(roiIndex);
     	minPoint = getMin(temp);
     	if (isAvailable(minPoint) && canMove[roiIndex])
