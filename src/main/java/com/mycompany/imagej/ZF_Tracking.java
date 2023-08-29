@@ -167,12 +167,11 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	image.setPosition(toSlice);
     	objectThreshold += flickeringVariation;
     	zfThreshold += flickeringVariation;
-    	System.out.println("zfThreshold on slice = "+zfThreshold); // DEBUG
-		IJ.setThreshold(0, objectThreshold, "No Update");
+	IJ.setThreshold(0, objectThreshold, "No Update");
     	pa.analyze(image);
 		
-		roiArray = zfManager.getRoisAsArray();
-		ImageProcessor nextSlice = image.getStack().getProcessor(toSlice);
+	roiArray = zfManager.getRoisAsArray();
+	ImageProcessor nextSlice = image.getStack().getProcessor(toSlice);
     	for (int j = 0 ; j < roiArray.length ; j++) { // enhanced for loops don't allow updating the array within the loop (which reduce(args) is doing)
     		Roi roi = zfManager.getRoi(j);
     		Point center = roiCenter(roi);
@@ -340,7 +339,7 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	for (Roi r:collidesWith) {
     		Roi overrideRoi = zfManager.getRoi(index);
     		Point roi1 = roiCenter(overrideRoi), roi2 = roiCenter(r);
-    		double radius = distance(roi1,roi2)/2;
+    		double radius = distance(roi1,roi2); // the rois will be constructed from the top left corners of their bounding boxes, so don't /= 2
     		setCircleRoi(roi1.x,roi1.y,radius,zfManager.getRoiIndex(overrideRoi));
     		setCircleRoi(roi2.x,roi2.y,radius,zfManager.getRoiIndex(r)); 
     		roiArray = zfManager.getRoisAsArray(); // After running rm.setRoi(), r and roi refer to nothing anymore.
