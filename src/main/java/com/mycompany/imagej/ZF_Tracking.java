@@ -15,12 +15,14 @@ import ij.process.ImageProcessor;
 import ij.measure.ResultsTable;
 import ij.IJ;
 import ij.ImageJ;
+import ij.ImagePlus;
 
 import org.scijava.command.Command;
 import org.scijava.plugin.Plugin;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.awt.event.KeyEvent;
 import java.awt.event.KeyListener;
 import java.awt.event.MouseEvent;
@@ -31,11 +33,10 @@ import java.awt.Point;
 @Plugin(type = Command.class, menuPath = "Plugins>ZF Tracking")
 public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener, MouseListener {
     String TEXT1 = "Click on each of the tracked particles.\nPress [ _ ] (underscore) once done, then OK to resume.";
-    String TEXT2 = "Choose a threshold value such that unwanted objects are selected.\nPress OK once done.";
-    String TEXT3 = "Stitch the trajectories by clicking on 2 of them with the point selection tool.\nPress [ _ ] (underscore) at each 2 that have been selected. "
+    String TEXT2 = "Stitch the trajectories by clicking on 2 of them with the point selection tool.\nPress [ _ ] (underscore) at each 2 that have been selected. "
     		+ "\nThe 2 last clicked trajectories are bound together. Once done, press OK to resume.";
-    double defaultRadius = 20.0, collisionHandlerRadius = 20.0, objectThreshold = 100, zfThreshold = 110, zfSize = 2, COLLISION_DIST = 8;
-    int MAXIMUM_AREA = 50, startSlice, collision, nbClicks = 1, frameRate=30;
+    double defaultRadius = 20.0, collisionHandlerRadius = 20.0, objectThreshold = 100, zfThreshold = 125, zfSize = 2, COLLISION_DIST = 3, previousSliceMax, zfThreshApprox = 5;
+    int MAXIMUM_AREA = 80, startSlice, collision, nbClicks = 1, frameRate=30;
     boolean canCreateROIs = true, trackingDone = false;
     boolean[] canMove; // zf rois are immobilized while handling collisions
     RoiManager zfManager, objManager,collisionManager;
@@ -47,19 +48,19 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     Roi collisionRoi;
     Point minPoint;
     ImageProcessor imp;
+    ImagePlus image;
     ParticleAnalyzer pa;
     ResultsTable rt;
     Overlay trajectories;
     
     @Override
     public void run() {
+    	image = IJ.getImage();
     	// making the image responsive to hereby defined key inputs
-    	IJ.getImage().getWindow().removeKeyListener(IJ.getInstance());
-    	IJ.getImage().getWindow().getCanvas().removeKeyListener(IJ.getInstance());
-    	IJ.getImage().getWindow().addKeyListener(this);
-    	IJ.getImage().getWindow().getCanvas().addKeyListener(this);
-    	IJ.getImage().getWindow().addMouseListener(this);
-    	IJ.getImage().getWindow().getCanvas().addMouseListener(this);
+    	image.getWindow().addKeyListener(this);
+    	image.getWindow().getCanvas().addKeyListener(this);
+    	image.getWindow().addMouseListener(this);
+    	image.getWindow().getCanvas().addMouseListener(this);
         
     	// a ROI manager for tracking objects
     	zfManager = new RoiManager(false);
@@ -72,23 +73,13 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	// a ROI manager for handling collisions
     	collisionManager = new RoiManager(false);
     	
-    	// getting user inputs
-        GenericDialog gd = new GenericDialog("ZF Larvae Tracking Parameters");
-        gd.addNumericField("Threshold:", upperThreshold, 90);
-        gd.addNumericField("Threshold:", zfThreshold, 80);
-        gd.addNumericField("Zebra fish size:", zfSize, 2);
-        gd.addNumericField("Frame rate:", frameRate, 30);
-        gd.showDialog();
-        if (gd.wasCanceled()) 
-        	return;
-        upperThreshold = gd.getNextNumber();
-        zfThreshold = gd.getNextNumber();
-        zfSize = gd.getNextNumber();
-        frameRate = gd.getNextNumber();
+    	// getting user inputs. returns a boolean for canceling the macro and stores the input values
+    	if (getUserInputs())
+    		return;
         
     	IJ.setTool("multipoint");
     	new WaitForUserDialog(TEXT1).show(); 
-    	int nbSlices = IJ.getImage().getImageStackSize(), nbROIs = roiArrayStart.length;
+    	int nbSlices = image.getImageStackSize(), nbROIs = roiArrayStart.length;
     	canMove = new boolean[nbROIs]; Arrays.fill(canMove, true);
     	collisionCounter = new int[nbROIs/2];
     	collisionRecord = new int[nbROIs][nbSlices];
@@ -96,7 +87,6 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	roiArray = roiArrayStart;
     	positionList = new Point[nbROIs][nbSlices];
     	minPoint = new Point();
-    	
     	// base case
     	for (int i = 0 ; i < roiArray.length ; i++) {
     		zfManager.addRoi(roiArray[i]);
@@ -108,13 +98,15 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     		moveRois(i,i+1);
     	}
 
-    	setRoisFromArray(roiArrayStart);
+    	setRoisFromArray(roiArrayStart); // re-initialize the zfManager
+    	Arrays.fill(canMove, true); // re-initialize collision handling
+    	
     	for (int i = startSlice ; i > 1 ; i--) {
     		moveRois(i,i-1);
     	}
     	
     	/* Draw the trajectories as an overlay of the input image 
-    	 * When a collision is detected in the trajectory (the zf have been stalled),
+    	 * When a collision is detected in the trajectory,
     	 * the already read positions are written to a new polyline.
     	 */
     	trajectories = new Overlay();
@@ -144,14 +136,14 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     		trajectories.add(polyline);
     	}
     	
-    	IJ.getImage().setOverlay(trajectories);
+    	image.setOverlay(trajectories);
     	trackingDone = true;
     	
     	// stitch the trajectories together
     	zfManager.reset(); // re-use the zfManager for handling the clicking
-    	new WaitForUserDialog(TEXT3).show();
+    	new WaitForUserDialog(TEXT2).show();
     	
-    	// write the positions to a result table: zebrafish index, X, Y.
+    	// write the positions to a result table: zebrafish index, X, Y, speed.
     	trackingDone = false;
     	IJ.run("Clear Results", "");
     	IJ.run("Set Measurements...", "  redirect=None decimal=4");
@@ -171,27 +163,31 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     }
 
     void moveRois (int fromSlice, int toSlice) {
-    	IJ.getImage().setPosition(toSlice);
-    	objectThreshold = frameValue(objectThreshold, fromSlice, toSlice);
+    	double flickeringVariation = sliceDiff(fromSlice, toSlice);
+    	image.setPosition(toSlice);
+    	objectThreshold += flickeringVariation;
+    	zfThreshold += flickeringVariation;
+    	System.out.println("zfThreshold on slice = "+zfThreshold); // DEBUG
 		IJ.setThreshold(0, objectThreshold, "No Update");
-    	pa.analyze(IJ.getImage());
+    	pa.analyze(image);
 		
 		roiArray = zfManager.getRoisAsArray();
+		ImageProcessor nextSlice = image.getStack().getProcessor(toSlice);
     	for (int j = 0 ; j < roiArray.length ; j++) { // enhanced for loops don't allow updating the array within the loop (which reduce(args) is doing)
     		Roi roi = zfManager.getRoi(j);
     		Point center = roiCenter(roi);
     		positionList[j][toSlice-1] = center;
     		roi.setPosition(toSlice);
-    		trackMin(j, fromSlice, toSlice);
+    		trackMin(j, fromSlice, toSlice, nextSlice);
     	}
-        handleCollisions(fromSlice, toSlice);
+        handleCollisions(fromSlice, toSlice, nextSlice);
     }
 
-    void trackMin(int roiIndex, int fromSlice, int toSlice) {
-	if (toSlice == positionList[0].length || toSlice < 0)
+    void trackMin(int roiIndex, int fromSlice, int toSlice, ImageProcessor ip) {
+    	if (toSlice == positionList[0].length || toSlice < 0)
     		return;
     	Roi temp = zfManager.getRoi(roiIndex);
-    	minPoint = getMin(temp);
+    	minPoint = getMin(temp,ip);
     	if (isAvailable(minPoint) && canMove[roiIndex])
     		temp.setLocation(minPoint.x-temp.getBounds().width/2, minPoint.y-temp.getBounds().height/2);
     	collisionList = getCollisions(temp, roiIndex, fromSlice, toSlice);
@@ -202,12 +198,11 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	}
     }
 
-    Point getMin (Roi roi) {
-    	imp = IJ.getImage().getStack().getProcessor(roi.getZPosition());
+    Point getMin (Roi roi, ImageProcessor ip) {
     	int min = 255, pixelValue = 0;
     	Point minPoint = new Point();
     	for (Point p:roi) {
-    		pixelValue = (int) imp.getValue(p.x,p.y);
+    		pixelValue = (int) ip.getValue(p.x,p.y);
     		if (min > pixelValue) {
     			min = pixelValue;
     			minPoint = p;
@@ -216,16 +211,15 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	return minPoint;
     }
     
-    Point getMin (Roi roi, double threshold, ArrayList<Point> exceptThese, double exclusionRadius) {
+    Point getMin (Roi roi, ImageProcessor ip, double threshold, ArrayList<Point> exceptThese, double exclusionRadius) {
     	if (exceptThese.size() == 0)
-    		return getMin(roi);
+    		return getMin(roi,ip);
     	
-    	imp = IJ.getImage().getStack().getProcessor(roi.getZPosition());
     	int min = 255, pixelValue = 0, nbExcluded = exceptThese.size();
     	Point minPoint = new Point();
     	boolean available = true;
     	for (Point p:roi) {
-    		pixelValue = (int) imp.getValue(p.x,p.y);
+    		pixelValue = (int) ip.getValue(p.x,p.y);
     		int p1 = 0;
     		do {
     			available = distance(exceptThese.get(p1),p)>exclusionRadius;
@@ -238,7 +232,7 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     		}
     		available = true;
     	}
-    	return min <= threshold ? minPoint : null;
+    	return (min <= threshold+zfThreshApprox) ? minPoint : null;
     }
 
     boolean isAvailable(Point point) {
@@ -268,15 +262,12 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     		}
     	}
     	// create a perimeter for handling the collision
-    	collisionX += roiCenter(roi).x*collision; collisionY += roiCenter(roi).y*collision;
+    	collisionX += collisionX > 0 ? roiCenter(roi).x : 0; collisionY += collisionY > 0 ? roiCenter(roi).y : 0;
     	collisionX /= nbColliding; collisionY /= nbColliding;
     	if (collisionX + collisionY != 0 && !isInROI(new Point((int)collisionX,(int)collisionY),collisionManager)) {
 			collisionRoi = makeCircleRoi(collisionX,collisionY,collisionHandlerRadius);
 			collisionRoi.setPosition(toSlice);
 			collisionManager.addRoi(collisionRoi);
-			collisionRoi.setStrokeColor(Color.red);//DEBUG
-			Overlay debug = new Overlay(collisionRoi);//DEBUG
-			IJ.getImage().setOverlay(debug);//DEBUG
     	}
     	collision = 0;
     	
@@ -290,11 +281,10 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
      * 2.b Else, replace the number with the current value and write down <code>null<\code> as the position of the ROI on this frame and prohibit their movement.
      *     This will then be used when stitching the trajectories together.
      */
-    void handleCollisions (int fromSlice, int toSlice) {
+    void handleCollisions (int fromSlice, int toSlice, ImageProcessor nextSlice) {
     	if (collisionManager.getCount() == 0)
     		return;
     	
-    	double threshold = frameValue(zfThreshold,fromSlice,toSlice);
 		// get the number of dark spots and the colliding zfs
 		for (int c = 0; c < collisionManager.getCount(); c++) { // enhanced for loops cannot be used when there is no instance of the ROI manager
 			ArrayList<Point> minima = new ArrayList<Point>();
@@ -303,7 +293,7 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
 			collisionManager.getRoi(c).setPosition(toSlice);
 			
 			do {
-				min = getMin(collisionManager.getRoi(c),threshold,minima,zfSize);
+				min = getMin(collisionManager.getRoi(c),nextSlice,zfThreshold,minima,zfSize);
 				if (min != null)
 					minima.add(min);
 			} while (min != null);
@@ -312,13 +302,24 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
 				if (distance(roiCenter(zfManager.getRoi(z)),roiCenter(collisionManager.getRoi(c))) < collisionHandlerRadius)
 					collidingROIs.add(z);
 			}
-			
+
+			// DEBUG
+			Overlay debug = new Overlay();
+			for (int p = 0; p<minima.size(); p++) {
+				Roi minimum = makeCircleRoi(minima.get(p).x,minima.get(p).y,zfSize);
+				minimum.setStrokeColor(Color.RED);
+				debug.add(minimum);
+				image.setOverlay(debug);
+			}
+			// DEBUG
+
 			if (minima.size() > collisionCounter[c] && collisionCounter[c] != 0) {
 			// i.e if the number of dark spots is higher than on the previous frame and the previous frame and there was a previous frame of collision
 				for (int p = 0; p<minima.size(); p++) {
 					int index = collidingROIs.get(p);
 					canMove[index] = true;
-					collisionManager.select(c); collisionManager.runCommand(IJ.getImage(),"Delete");
+					collisionManager.select(c); 
+					collisionManager.runCommand(image,"Delete");
 					setCircleRoi(minima.get(p).x,minima.get(p).y,defaultRadius,index);
 					collisionList = getCollisions(zfManager.getRoi(index), index, fromSlice, toSlice);
 					if (collisionList.size()>0)
@@ -328,7 +329,6 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
 			} else {
 				for (int z:collidingROIs) {
 					canMove[z] = false;
-					positionList[z][toSlice] = null;
 				}
 				collisionCounter[c] = minima.size();
 			}
@@ -336,10 +336,12 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     }
     
     void reduce(Roi roi, ArrayList<Roi> collidesWith) {
+    	int index = zfManager.getRoiIndex(roi);
     	for (Roi r:collidesWith) {
-    		Point roi1 = roiCenter(roi), roi2 = roiCenter(r);
+    		Roi overrideRoi = zfManager.getRoi(index);
+    		Point roi1 = roiCenter(overrideRoi), roi2 = roiCenter(r);
     		double radius = distance(roi1,roi2)/2;
-    		setCircleRoi(roi1.x,roi1.y,radius,zfManager.getRoiIndex(roi));
+    		setCircleRoi(roi1.x,roi1.y,radius,zfManager.getRoiIndex(overrideRoi));
     		setCircleRoi(roi2.x,roi2.y,radius,zfManager.getRoiIndex(r)); 
     		roiArray = zfManager.getRoisAsArray(); // After running rm.setRoi(), r and roi refer to nothing anymore.
     	}
@@ -374,11 +376,13 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	return new Point((int) x,(int) y);
     }
     
+    // create the search ROIs from user inputs and define a pixel value threshold for zebrafish (i.e the max of all mins from the startROIs)
     void createStartROIs() {
+    	ArrayList<Double> minList = new ArrayList<Double>();
     	rt = ResultsTable.getResultsTable(); // returns the front-most rt
     	IJ.run("Clear Results", "");
     	IJ.run("Set Measurements...", "  redirect=None decimal=3");
-    	IJ.run(IJ.getImage(), "Measure", "");
+    	IJ.run(image, "Measure", "");
     	startSlice = (int) rt.getValue("Slice", 0);
     	double[][] coordinates = new double[2][rt.getCounter()];
     	for (int i = 0; i < coordinates[0].length*2; i++) {
@@ -386,9 +390,12 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	}
     	IJ.run("Clear Results", "");
     	roiArrayStart = new Roi[coordinates[0].length];
+    	ImageProcessor ipStart = IJ.getImage().getStack().getProcessor(startSlice);
     	for (int i = 0 ; i < coordinates[0].length ; i++) {
     		roiArrayStart[i] = makeCircleRoi(coordinates[0][i], coordinates[1][i], defaultRadius);
+    		minList.add(Collections.min( Arrays.asList(getContainedPointsValues(roiArrayStart[i],ipStart))) );
     	}
+    	zfThreshold = Collections.max(minList);
     }
     
     /* When the user clicks on the image, the nearest point in positionList is collected.
@@ -410,7 +417,7 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	rt = ResultsTable.getResultsTable();
     	IJ.run("Clear Results","");
     	IJ.run("Set Measurements..."," redirect=None decimal=1");
-    	IJ.run(IJ.getImage(), "Measure", "");
+    	IJ.run(image, "Measure", "");
     	clicked1.x = (int) rt.getValue("X",0); clicked1.y = (int) rt.getValue("Y",0);
     	clicked2.x = (int) rt.getValue("X",1); clicked2.y = (int) rt.getValue("Y",1);
 
@@ -488,21 +495,24 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     }
     
     // adapts the given value to a slice's light exposure provided that no bright objects are introduced and that the change in light exposure is homogeneous.
-    double frameValue(double value, int fromSlice, int toSlice) {
-    	imp = IJ.getImage().getStack().getProcessor(fromSlice);
-    	ImageProcessor imp2 = IJ.getImage().getStack().getProcessor(toSlice);
-    	return value + imp2.getMax()-imp.getMax();
+    double sliceDiff(int fromSlice, int toSlice) {
+    	if (fromSlice == startSlice)
+    		previousSliceMax = maxValue( image.getStack().getProcessor(fromSlice) );
+    	double toSliceMax = maxValue( image.getStack().getProcessor(toSlice) );
+    	double diff = toSliceMax-previousSliceMax;
+    	previousSliceMax = toSliceMax;
+    	return diff;
     }
     
     double distance(Point A, Point B) {
     	return Math.sqrt((A.x-B.x)*(A.x-B.x)+(A.y-B.y)*(A.y-B.y));
     }
     
-    double[] getContainedPointsValues(Roi roi, int slice) {
+    Double[] getContainedPointsValues(Roi roi, ImageProcessor ip) {
     	Point[] containedPoints = roi.getContainedPoints();
-    	double[] values = new double[containedPoints.length];
+    	Double[] values = new Double[containedPoints.length];
     	for (int i = 0 ; i < containedPoints.length ; i++) {
-    		values[i] = IJ.getImage().getStack().getProcessor(slice).getValue(containedPoints[i].x,containedPoints[i].y);
+    		values[i] = ip.getValue(containedPoints[i].x,containedPoints[i].y);
     	}
     	return values;
     }
@@ -527,17 +537,52 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
 	@Override
 	public void mousePressed (MouseEvent e) {
 		if (nbClicks > 2) {
-    		IJ.run(IJ.getImage(), "Select None", "");
-    		nbClicks = 0;
-    	}
+  			IJ.run(image, "Select None", "");
+   			nbClicks = 0;
+   		}
 		nbClicks += (e.getButton() == MouseEvent.BUTTON1 && e.getID() == MouseEvent.MOUSE_PRESSED && trackingDone)?1:0;
+	}
+	
+	boolean getUserInputs() {
+		// get numeric fields
+       		GenericDialog gd = new GenericDialog("ZF Larvae Tracking Numeric Parameters");
+        	gd.addNumericField("Object maximum intensity:", objectThreshold, 0);
+		gd.addNumericField("Error bar for zebrafish maximum intensity", zfThreshApprox);
+        	gd.addNumericField("Frame rate:", frameRate, 0);
+		gd.addNumericField("Zebrafish size", zfSize,0);
+		gd.addNumericField("Tracking area", defaultRadius,0);
+		gd.addNumericField("Collision Manager Area", collisionHandlerRadius,0);
+		gd.showDialog();
+
+        	if (gd.wasCanceled()) 
+        		return true;
+        
+        	objectThreshold = gd.getNextNumber();
+        	zfThreshApprox = gd.getNextNumber();
+       		frameRate = (int)gd.getNextNumber();
+		zfSize = gd.getNextNumber();
+        	defaultRadius = gd.getNextNumber();
+        	collisionHandlerRadius = gd.getNextNumber();
+        
+        	return false;
+	}
+	
+	double maxValue (ImageProcessor ip) {
+		int w = ip.getWidth(), h = ip.getHeight(), max = 0;
+		for (int x = 0; x < w; x++) {
+			for (int y = 0; y < h; y++) {
+				if (max < ip.get(x,y))
+					max = ip.get(x,y);
+			}
+		}
+		return max;
 	}
 
     public static void main(final String... args) throws Exception {
     	@SuppressWarnings("unused")
 		ImageJ ij = new ImageJ();
     	ZF_Tracking<FloatType> zf = new ZF_Tracking<FloatType>();
-    	IJ.run("AVI...", "avi=/home/criuser/Desktop/Licence/Stage_L3/n=15-06252023180457-0000.avi use convert first=500 last=537");
+    	IJ.run("AVI...", "avi=/home/criuser/Desktop/Licence/Stage_L3/n=15-06252023180457-0000.avi use convert first=430 last=500");
     	// invoke the plugin
         zf.run();
     }
