@@ -36,7 +36,7 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     String TEXT2 = "Stitch the trajectories by clicking on 2 of them with the point selection tool.\nPress [ _ ] (underscore) at each 2 that have been selected. "
     		+ "\nThe 2 last clicked trajectories are bound together. Once done, press OK to resume.";
     double defaultRadius = 20.0, collisionHandlerRadius = 20.0, objectThreshold = 100, zfThreshold = 125, zfSize = 2, collision_dist = 5, previousSliceMax, zfThreshApprox = 1;
-    int MAXIMUM_AREA = 80, startSlice, collision, nbClicks = 1, frameRate=30;
+    int maximal_area = 80, startSlice, collision, nbClicks = 1, frameRate=30;
     boolean canCreateROIs = true, trackingDone = false;
     boolean[] canMove; // zf rois are immobilized while handling collisions
     RoiManager zfManager, objManager,collisionManager;
@@ -50,9 +50,7 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     ImagePlus image;
     ParticleAnalyzer pa;
     ResultsTable rt;
-    Overlay trajectories;
     
-	// TODO swapping is going crazy and stitching a bit zigzagy
     @Override
     public void run() {
     	image = IJ.getImage();
@@ -68,7 +66,7 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	zfManager.runCommand("Associate", "true");
     	// a ROI manager to exclude large objects
     	objManager = new RoiManager(false); // uses a dedicated particle analyzer which stores in it all particles for which size > max
-    	pa = new ParticleAnalyzer(ParticleAnalyzer.ADD_TO_MANAGER,0,rt,MAXIMUM_AREA,Double.MAX_VALUE);
+    	pa = new ParticleAnalyzer(ParticleAnalyzer.ADD_TO_MANAGER,0,rt,maximal_area,Double.MAX_VALUE);
     	ParticleAnalyzer.setRoiManager(objManager);
     	// a ROI manager for handling collisions
     	collisionManager = new RoiManager(false);
@@ -109,34 +107,7 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     	 * When a collision is detected in the trajectory,
     	 * the already read positions are written to a new polyline.
     	 */
-    	trajectories = new Overlay();
-    	for (int i = 0 ; i < nbROIs ; i++) {
-    		ArrayList<Integer> x = new ArrayList<Integer>(), y = new ArrayList<Integer>(); 
-    		for (int j = 1 ; j < nbSlices ; j++) {
-    			if (collisionRecord[i][j] == 1) {
-    				int[] xArray = new int[x.size()], yArray = new int[y.size()];
-    				for (int k = 0; k<x.size(); k++) {
-    					xArray[k] = x.get(k); yArray[k] = y.get(k);
-    				}
-    				PolygonRoi polyline = new PolygonRoi(xArray,yArray,x.size(),PolygonRoi.POLYLINE);
-    				polyline.setStrokeColor(new Color((float) Math.random(),(float) Math.random(),(float) Math.random()));
-    				polyline.setStrokeWidth(1);
-    				trajectories.add(polyline);
-    				x = new ArrayList<Integer>(); y = new ArrayList<Integer>();
-    			}
-    			x.add(positionList[i][j].x); y.add(positionList[i][j].y);
-    		}
-    		int[] xArray = new int[x.size()], yArray = new int[y.size()];
-    		for (int k = 0; k<x.size(); k++) {
-    			xArray[k] = x.get(k); yArray[k] = y.get(k);
-    		}
-    		PolygonRoi polyline = new PolygonRoi(xArray,yArray,x.size(),PolygonRoi.POLYLINE);
-    		polyline.setStrokeColor(new Color((float) Math.random(),(float) Math.random(),(float) Math.random()));
-    		polyline.setStrokeWidth(1);
-    		trajectories.add(polyline);
-    	}
-    	
-    	image.setOverlay(trajectories);
+    	image.setOverlay(zfTrajectories(false));
     	trackingDone = true;
     	
     	// stitch the trajectories together
@@ -152,11 +123,12 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     		for (int slice = 0; slice < nbSlices; slice++) {
     			rt.addRow();
     			rt.addValue("Zebrafish", zf+1);
-    			rt.addValue("On slice", slice);
+    			rt.addValue("On slice", slice+1);
     			rt.addValue("X", positionList[zf][slice].x);
     			rt.addValue("Y", positionList[zf][slice].y);
     			speed = slice > 0 ? distance(positionList[zf][slice],positionList[zf][slice-1])/frameRate:0;
     			rt.addValue("Speed (pixels/s)", speed);
+    			rt.addValue("Collision", collisionRecord[zf][slice]);
     		}
     	}
     	rt.show("Zebrafish Tracking Results");
@@ -458,29 +430,29 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     			dist = distance(clicked1,positionList[r][s]);
     			if (minDist1 > dist) {
     				minDist1 = dist;
-    				roiIndex1 = r; endOfCollision1 = endOfCollision; startOfCollision1 = startOfCollision;
+    				roiIndex1 = r; endOfCollision1 = endOfCollision+1; startOfCollision1 = startOfCollision+1;
     			}
     			dist = distance(clicked2,positionList[r][s]);
     			if (minDist2 > dist) {
     				minDist2 = dist;
-    				roiIndex2 = r; endOfCollision2 = endOfCollision; startOfCollision2 = startOfCollision;
+    				roiIndex2 = r; endOfCollision2 = endOfCollision+1; startOfCollision2 = startOfCollision+1;
     			}
     		}
     	}
-	    
+    	
     	boolean traj1Upstream = endOfCollision2 > endOfCollision1;
     	endOfCollision = traj1Upstream ? endOfCollision2 : endOfCollision1; // checking if the downstream trajectory is clicked2's.
     	startOfCollision = traj1Upstream ? startOfCollision2 : startOfCollision1;
-    	
+
     	// stitch the trajectories, i.e add points intermediary points when the zf was stalled
     	int s = startOfCollision, collisionDuration = endOfCollision - startOfCollision, step = 1;
     	do {
-    		if (!traj1Upstream) {
+    		if (traj1Upstream && collisionDuration != 0) {
         		positionList[roiIndex1][s].x = ( positionList[roiIndex1][startOfCollision].x  * (collisionDuration - step) 
         				+ positionList[roiIndex2][endOfCollision].x * step ) / collisionDuration;
         		positionList[roiIndex1][s].y = ( positionList[roiIndex1][startOfCollision].y  * (collisionDuration - step) 
         				+ positionList[roiIndex2][endOfCollision].y * step ) / collisionDuration;
-    		} else {
+    		} else if (collisionDuration != 0) {
         		positionList[roiIndex2][s].x = ( positionList[roiIndex2][startOfCollision].x  * (collisionDuration - step) 
         				+ positionList[roiIndex1][endOfCollision].x * step ) / collisionDuration;
         		positionList[roiIndex2][s].y = ( positionList[roiIndex2][startOfCollision].y  * (collisionDuration - step)
@@ -488,12 +460,11 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
     		}
     		step++;
     		s++;
-    	} while ( (s < endOfCollision+1) && (
+    	} while ( (s < endOfCollision) && (
     			(collisionRecord[roiIndex1][s] == 1) || positionList[roiIndex1][s].equals(positionList[roiIndex1][s+1]) ));
-	    
+    	
     	// swap the points until then next collision is met, then continue swapping all equal points (stalled zf)
     	do {
-    		s++;
     		if (traj1Upstream) {
     			temp = positionList[roiIndex1][s];
     			tempInt = collisionRecord[roiIndex1][s];
@@ -510,32 +481,21 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
         		collisionRecord[roiIndex2][s] = collisionRecord[roiIndex1][s];
         		collisionRecord[roiIndex1][s] = tempInt;
     		}
+    		s++;
     	} while ( (s < nbSlices-1) && (
     			(collisionRecord[roiIndex1][s] == 0 || positionList[roiIndex1][s].equals(positionList[roiIndex1][s+1]) ) ||
     			(collisionRecord[roiIndex2][s] == 0 || positionList[roiIndex2][s].equals(positionList[roiIndex2][s+1]))) );
     	// i.e until the next collision of one of the 2 downstream trajectories is done
-    	if (s == nbSlices-2) {
-	    	temp = positionList[roiIndex1][nbSlices-1];
-			positionList[roiIndex1][nbSlices-1] = positionList[roiIndex2][nbSlices-1];
-			positionList[roiIndex2][nbSlices-1] = temp;
+    	if (s == nbSlices-1) {
+	    	temp = positionList[roiIndex1][s];
+			positionList[roiIndex1][s] = positionList[roiIndex2][s];
+			positionList[roiIndex2][s] = temp;
 			tempInt = collisionRecord[roiIndex1][nbSlices-1];
-			collisionRecord[roiIndex1][nbSlices-1] = collisionRecord[roiIndex2][nbSlices-1];
-			collisionRecord[roiIndex2][nbSlices-1] = tempInt;
+			collisionRecord[roiIndex1][s] = collisionRecord[roiIndex2][s];
+			collisionRecord[roiIndex2][s] = tempInt;
     	}
 		
-    	int[] x1 = new int[nbSlices], x2 =  new int[nbSlices];
-    	int[] y1 = new int[nbSlices], y2 =  new int[nbSlices];
-    	for (int p = 0; p < nbSlices; p++) {
-    		x1[p] = positionList[roiIndex1][p].x; x2[p] = positionList[roiIndex2][p].x;
-    		y1[p] = positionList[roiIndex1][p].y; y2[p] = positionList[roiIndex2][p].y;
-    	}
-    	PolygonRoi polyline1 = new PolygonRoi(x1,y1,x1.length,PolygonRoi.POLYLINE);
-    	PolygonRoi polyline2 = new PolygonRoi(x2,y2,x2.length,PolygonRoi.POLYLINE);
-    	polyline1.setStrokeColor(new Color((float) Math.random(),(float) Math.random(),(float) Math.random()));
-		polyline1.setStrokeWidth(1);
-		polyline2.setStrokeColor(new Color((float) Math.random(),(float) Math.random(),(float) Math.random()));
-		polyline2.setStrokeWidth(1);
-		trajectories.add(polyline1); trajectories.add(polyline2);
+    	image.setOverlay(zfTrajectories(true));
     }
     
     void setRoisFromArray(Roi[] roiArray) {
@@ -591,28 +551,31 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
 	@Override
 	public void mousePressed (MouseEvent e) {
 		if (nbClicks > 2) {
-	    		IJ.run(image, "Select None", "");
-	    		nbClicks = 0;
-	    	}
-			nbClicks += (e.getButton() == MouseEvent.BUTTON1 && e.getID() == MouseEvent.MOUSE_PRESSED && trackingDone)?1:0;
-		}
-		
-		boolean getUserInputs() {
+    		IJ.run(image, "Select None", "");
+    		nbClicks = 0;
+    	}
+		nbClicks += (e.getButton() == MouseEvent.BUTTON1 && e.getID() == MouseEvent.MOUSE_PRESSED && trackingDone)?1:0;
+	}
+	
+	boolean getUserInputs() {
 		// get numeric fields
-	        GenericDialog gd = new GenericDialog("ZF Larvae Tracking Numeric Parameters");
-	        gd.addNumericField("Object maximum intensity", objectThreshold, 0);
+        	GenericDialog gd = new GenericDialog("ZF Larvae Tracking Numeric Parameters");
+        	gd.addNumericField("Object maximal intensity", objectThreshold, 0);
+       		gd.addNumericField("Object minimal size", maximal_area);
 		gd.addNumericField("Error bar for zebrafish maximum intensity", zfThreshApprox);
-	        gd.addNumericField("Frame rate", frameRate, 0);
+       		gd.addNumericField("Frame rate", frameRate, 0);
 		gd.addNumericField("Zebrafish_size", zfSize,0);
 		gd.addNumericField("Tracking_radius", defaultRadius,0);
 		gd.addNumericField("Collision_manager_radius", collisionHandlerRadius,0);
 		gd.addNumericField("Collision_distance", collision_dist);
+		gd.addHelp("https://github.com/Rachmanichou/Zebra_Fish_Tracking");
 		gd.showDialog();
 	
 	        if (gd.wasCanceled()) 
 	        	return true;
 	        
 	        objectThreshold = gd.getNextNumber();
+	        maximal_area = (int) gd.getNextNumber();
 	        zfThreshApprox = gd.getNextNumber();
 	        frameRate = (int)gd.getNextNumber();
 		zfSize = gd.getNextNumber();
@@ -621,6 +584,37 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
 	        collision_dist = gd.getNextNumber();
 	        
 	        return false;
+	}
+	
+	Overlay zfTrajectories (boolean stitch) {
+    	Overlay trajectories = new Overlay();
+    	int nbROIs = positionList.length, nbSlices = positionList[0].length;
+    	for (int i = 0 ; i < nbROIs ; i++) {
+    		ArrayList<Integer> x = new ArrayList<Integer>(), y = new ArrayList<Integer>(); 
+    		for (int j = 1 ; j < nbSlices ; j++) {
+    			if (collisionRecord[i][j] == 1 && !stitch) {
+    				int[] xArray = new int[x.size()], yArray = new int[y.size()];
+    				for (int k = 0; k<x.size(); k++) {
+    					xArray[k] = x.get(k); yArray[k] = y.get(k);
+    				}
+    				PolygonRoi polyline = new PolygonRoi(xArray,yArray,x.size(),PolygonRoi.POLYLINE);
+    				polyline.setStrokeColor(new Color((float) Math.random(),(float) Math.random(),(float) Math.random()));
+    				polyline.setStrokeWidth(1);
+    				trajectories.add(polyline);
+    				x = new ArrayList<Integer>(); y = new ArrayList<Integer>();
+    			}
+    			x.add(positionList[i][j].x); y.add(positionList[i][j].y);
+    		}
+    		int[] xArray = new int[x.size()], yArray = new int[y.size()];
+    		for (int k = 0; k<x.size(); k++) {
+    			xArray[k] = x.get(k); yArray[k] = y.get(k);
+    		}
+    		PolygonRoi polyline = new PolygonRoi(xArray,yArray,x.size(),PolygonRoi.POLYLINE);
+    		polyline.setStrokeColor(new Color((float) Math.random(),(float) Math.random(),(float) Math.random()));
+    		polyline.setStrokeWidth(1);
+    		trajectories.add(polyline);
+    	}
+    	return trajectories;
 	}
 	
 	double maxValue (ImageProcessor ip) {
@@ -633,15 +627,6 @@ public class ZF_Tracking<T extends RealType<T>> implements Command, KeyListener,
 		}
 		return max;
 	}
-
-    public static void main(final String... args) throws Exception {
-    	@SuppressWarnings("unused")
-	ImageJ ij = new ImageJ();
-    	ZF_Tracking<FloatType> zf = new ZF_Tracking<FloatType>();
-    	IJ.run("AVI...", "avi=/home/criuser/Desktop/Licence/Stage_L3/n=15-06252023180457-0000.avi use convert first=460 last=490");
-    	// invoke the plugin
-        zf.run();
-    }
 
 	@Override
 	public void keyTyped(KeyEvent e) {}
