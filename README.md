@@ -12,4 +12,4 @@ Collisions are tricky to handle: the colliding dark spots merge into one and sep
 Computing results:
 ==================
 The trajectories are displayed on the image, so that the user can estimate the precision of the algorithm. Position arrays for each zebrafish are added to a result table, speed profile and average speeds to respective ones.
-![til](zf_tracking_demo.gif "An example of running the zebra fish tracking algorithm. User-entry defined 3 zebrafish to be tracked.")
+![til](zf_tracking_demo.gif "An example of running the zebra fish tracking algorithm. User-entry defined 3 zebrafish to be tracked." =200x200)
