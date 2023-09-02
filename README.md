@@ -41,7 +41,8 @@ The video's frame rate in fps. This will be used for computing the zebrafish's s
 
 The radius of a zebrafish in pixels.
 
-Tracking radius:
+### Tracking radius:
+
 The radius in pixels of the circle within which the same zebrafish will be looked for in the next frame. Higher values yield lower chances of loosing its trail, especially if the specimens have a tendency to abruptly increase their speed, but come at the expanse of computation speed.
 
 ### Collision manager radius:
